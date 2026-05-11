@@ -2,12 +2,63 @@
 
 A single-page React application built as a **"testable universe"** for Playwright automation. Every room isolates a distinct browser API, UI pattern, or timing challenge. Use it to practice, demonstrate, and benchmark QA automation skills.
 
-**Stack:** Vite · React 19 · TypeScript · Tailwind CSS · @dnd-kit
+**Stack:** Vite · React 19 · TypeScript · Tailwind CSS · @dnd-kit · Express (in-process backend)
 
 ```bash
 npm install
-npm run dev       # http://localhost:5173
-npm run build     # production build
+npm run dev       # boots Vite (5173) + API (5174) together
+npm run build     # production build (frontend only)
+npm run dev:web   # frontend only
+npm run dev:api   # backend only
+```
+
+---
+
+## Backend
+
+A small Express + TypeScript server lives in [`/server`](server/) and powers the 6 rooms that need real HTTP. In dev, `npm run dev` boots it via `concurrently` alongside Vite, and Vite proxies `/api/*` to it (configured in [vite.config.ts](vite.config.ts)), so the frontend uses same-origin URLs and there's no CORS to deal with.
+
+- **Port:** `5174` (override with `API_PORT`)
+- **Storage:** in-memory — every restart re-seeds. No DB.
+- **Auth:** HS256 JWT signed with `process.env.JWT_SECRET` (defaults to a sandbox secret).
+
+### Endpoint reference
+
+| Endpoint | Used by | Notes |
+|---|---|---|
+| `GET /api/health` | smoke checks | `{ok: true}` |
+| `POST /api/login` | AuthRoom | Body `{username, password}`. Returns `{token, username}` and sets `auth-session` cookie. Password literal `"wrong"` → 401. Empty fields → 400. |
+| `GET /api/me` | AuthRoom (optional) | Verifies `Authorization: Bearer <token>`. |
+| `POST /api/logout` | AuthRoom | Clears the cookie. 204. |
+| `GET /api/rows` | TableRoom | Returns the 10 seed rows. |
+| `DELETE /api/rows/:id` | TableRoom | 204 on success, 404 if missing. |
+| `PATCH /api/rows/:id` | TableRoom | Body `{status: 'Active' \| 'Inactive'}`. Returns the updated row. |
+| `POST /api/_reset/rows` | tests | Re-seeds the table store. 204. |
+| `POST /api/upload` | UploadRoom | `multipart/form-data` with field name `files`. 10 MB cap per file (413 on overflow). Returns `{files: [{id, name, size, type}]}`. |
+| `GET /api/records?page=N&limit=8` | PaginationRoom (paged tab) | Returns `{items, page, totalPages, total}`. |
+| `GET /api/records?offset=N&limit=10` | PaginationRoom (infinite tab) | Returns `{items, offset, limit, total}`. |
+| `POST /api/flaky/deterministic` | RetryRoom | Per-session counter keyed by `x-session-id` header. 500 first 2 calls, 200 on 3rd. |
+| `POST /api/flaky/deterministic/reset` | RetryRoom | Resets the counter for the calling session. 204. |
+| `POST /api/flaky/probabilistic` | RetryRoom | 40% chance of 500, else 200. 400–800 ms latency. |
+| `* /api/mock/*` | MockApiRoom | Any method/path under `/api/mock`. Query params `mockStatus=<code>` and `mockDelay=<ms>` shape the response. Body matches the canonical mock body for the requested status. |
+
+### Server layout
+
+```
+server/
+  index.ts                 # Express bootstrap, mounts routers, listens on 5174
+  routes/
+    auth.ts                # /api/login, /api/me, /api/logout
+    table.ts               # /api/rows CRUD
+    upload.ts              # /api/upload (multer, memory storage, 10MB limit)
+    pagination.ts          # /api/records (page+limit or offset+limit)
+    retry.ts               # /api/flaky/{deterministic,probabilistic}
+    mockApi.ts             # /api/mock/* — honors ?mockStatus= & ?mockDelay=
+  data/
+    rows.ts                # TableRow seed + in-memory store
+    records.ts             # 50 paginated records, same generator the room used to use
+  middleware/
+    delay.ts               # parses ?mockDelay= and sleeps before next()
 ```
 
 ---
@@ -40,7 +91,7 @@ npm run build     # production build
 
 **Route:** `nav-auth` sidebar button
 
-Simulates a login flow without a real backend. On successful login, a dummy token is written to `localStorage` and an `auth-session` cookie is set — the exact state that Playwright's `storageState` captures and restores.
+Real login flow. The form `POST`s to `/api/login` (Express). The server validates credentials, signs an HS256 JWT, returns it in the body, and sets an `auth-session` cookie. The room writes the token to `localStorage`, giving Playwright's `storageState` something authentic to capture and restore. Password literal `"wrong"` returns a 401 for deterministic failure tests.
 
 **Key `data-testid` attributes**
 
@@ -58,12 +109,14 @@ Simulates a login flow without a real backend. On successful login, a dummy toke
 **Test cases**
 
 ```
-✓ Login with empty fields shows error message
+✓ Login with empty fields shows error message ("Both fields are required")
+✓ Login with password "wrong" surfaces "Invalid credentials" from a real 401
 ✓ Login with valid credentials hides the form and shows success panel
-✓ localStorage contains "auth-token" after login
-✓ Cookie "auth-session=active" is set after login
-✓ Logout button clears localStorage and resets to login form
-✓ Page reloaded after storageState saved — user is still "logged in" (token present)
+✓ localStorage["auth-token"] contains a real JWT (3 dot-separated segments) after login
+✓ The auth-session cookie is set by the server (visible in document.cookie)
+✓ Logout button POSTs /api/logout and clears localStorage
+✓ Page reloaded after storageState saved — token still present, login form not shown
+✓ Intercept POST /api/login with page.route() to return a custom token
 ```
 
 ---
@@ -145,7 +198,7 @@ Three independent async patterns that require Playwright's waiting strategies ra
 
 **Route:** `nav-table` sidebar button
 
-A 10-row data table where each row has unique per-row action buttons. Tests locator scoping and row-level assertions.
+A 10-row data table backed by `/api/rows`. Mutations (delete, status toggle) are real HTTP calls with optimistic UI updates and rollback on failure. State persists across reloads within a server run — use `POST /api/_reset/rows` to restore the seed.
 
 **Key `data-testid` attributes**
 
@@ -158,6 +211,7 @@ A 10-row data table where each row has unique per-row action buttons. Tests loca
 | `delete-btn-{id}` | Removes the row from the DOM |
 | `table-row-count` | Footer showing current row count |
 | `table-empty` | Shown when all rows are deleted |
+| `table-loading` | Shown while the initial `GET /api/rows` is in flight |
 
 **Test cases**
 
@@ -169,6 +223,9 @@ A 10-row data table where each row has unique per-row action buttons. Tests loca
 ✓ Clicking toggle-btn-1 again restores status-1 to "Active"
 ✓ Deleting all rows shows table-empty
 ✓ Status badge colour matches the status text
+✓ Deleting row-3 then reloading the page — row-3 is still missing (server persisted)
+✓ POST /api/_reset/rows restores all 10 rows
+✓ page.route('**/api/rows/3', r => r.fulfill({status: 500})) — UI rolls back the optimistic delete
 ```
 
 ---
@@ -242,7 +299,9 @@ Exercises browser APIs accessible via Chrome DevTools Protocol — geolocation o
 
 **Route:** `nav-mock-api` sidebar button
 
-A visual HTTP request builder that returns simulated responses. Configure method, endpoint, status code (200–503), and response delay. Used to practice `page.route()` request interception and response assertion.
+A visual HTTP request builder. Every "Send" fires a **real** `fetch()` to `/api/mock/*` with `?mockStatus=<code>&mockDelay=<ms>` query params, and the Express handler echoes the requested status, delay, and the canonical mock body. Because the request is real, Playwright's `page.route()` can intercept it for free.
+
+The endpoint dropdown now offers `/api/mock/users`, `/api/mock/users/42`, `/api/mock/products`, `/api/mock/orders/7`, and `/api/mock/auth/token`.
 
 **Key `data-testid` attributes**
 
@@ -271,7 +330,9 @@ A visual HTTP request builder that returns simulated responses. Configure method
 ✓ Select DELETE + 404 → response body contains "Not Found"
 ✓ Set delay to 2000ms → api-response-duration shows ~2000ms
 ✓ Send 3 requests → api-history contains 3 items
-✓ Intercept via page.route("/api/users") and return custom body — response panel shows mocked payload
+✓ Intercept via page.route('**/api/mock/users**') and fulfill a custom body — api-response-body shows the mocked payload
+✓ Set delay to 2000ms → DevTools network shows ~2000ms latency, api-response-duration matches
+✓ api-response-headers contains x-mock-endpoint matching the requested path
 ✓ api-send-button is disabled while request is in-flight
 ```
 
@@ -400,6 +461,8 @@ Transient notifications that auto-dismiss after 3 seconds. Tests timing-sensitiv
 
 Three independent patterns for practicing retry logic, flakiness tolerance, and race condition handling.
 
+The deterministic and probabilistic patterns are now driven by `/api/flaky/*` — real HTTP failures, not client-side simulations. Double-Submit Guard remains client-side (it's a UI guard, not a network test).
+
 ### Deterministic Failure
 
 **Key `data-testid` attributes**
@@ -444,6 +507,9 @@ Three independent patterns for practicing retry logic, flakiness tolerance, and 
 ✓ Using expect.poll(() => ...) eventually observes a success from flaky-button
 ✓ Clicking double-submit-button twice rapidly → double-submit-count remains "1"
 ✓ double-submit-button is disabled (aria-disabled) immediately after first click
+✓ retry-button: three POSTs to /api/flaky/deterministic — server returns 500, 500, 200
+✓ retry-reset POSTs /api/flaky/deterministic/reset so the next click is attempt #1 again
+✓ flaky-button: page.route('**/api/flaky/probabilistic', r => r.fulfill({status: 200})) — every click succeeds
 ```
 
 ---
@@ -452,7 +518,7 @@ Three independent patterns for practicing retry logic, flakiness tolerance, and 
 
 **Route:** `nav-pagination` sidebar button
 
-50 records split across two tabs: classic numbered pagination and IntersectionObserver-driven infinite scroll.
+50 records served by `/api/records`. The paginated tab fetches with `?page=N&limit=8`; the infinite tab uses `?offset=N&limit=10` and an IntersectionObserver sentinel. Each tab interaction is a real network call.
 
 **Key `data-testid` attributes**
 
@@ -476,6 +542,7 @@ Three independent patterns for practicing retry logic, flakiness tolerance, and 
 | `load-more-button` | Manual load-more trigger |
 | `infinite-end` | "All records loaded" message |
 | `infinite-visible-count` | How many records are shown |
+| `paginated-loading` | Shown while the page fetch is in flight (initial load only) |
 
 **Test cases**
 
@@ -490,6 +557,9 @@ Three independent patterns for practicing retry logic, flakiness tolerance, and 
 ✓ Clicking load-more-button loads 10 more rows
 ✓ Scrolling to infinite-sentinel triggers automatic load
 ✓ After all 50 records load, infinite-end is visible
+✓ Each page-button-* click fires a single GET /api/records?page=N&limit=8
+✓ Infinite scroll: sentinel intersection triggers GET /api/records?offset=N&limit=10
+✓ page.route('**/api/records*', r => r.fulfill({status: 500})) — UI handles the failure gracefully (last good state kept)
 ```
 
 ---
@@ -498,7 +568,7 @@ Three independent patterns for practicing retry logic, flakiness tolerance, and 
 
 **Route:** `nav-upload` sidebar button
 
-A file upload interface with both a traditional `<input type="file">` (target for Playwright's `setInputFiles()`) and a drag-and-drop zone. No actual upload — files are shown in a list with metadata.
+A file upload interface with both a traditional `<input type="file">` (target for Playwright's `setInputFiles()`) and a drag-and-drop zone. Selected files are POSTed as real `multipart/form-data` to `/api/upload`. The server caps each file at 10 MB (413 on overflow). Image previews are still generated client-side via `URL.createObjectURL`.
 
 **Key `data-testid` attributes**
 
@@ -518,6 +588,8 @@ A file upload interface with both a traditional `<input type="file">` (target fo
 | `total-size` | Sum of all file sizes |
 | `clear-all-button` | Removes all files |
 | `no-files-message` | Shown when list is empty |
+| `upload-status` | Shows `Idle` / `Uploading…` / `Upload complete` / `✗ <error>` |
+| `upload-error` | The inline error message (when upload-status is in error state) |
 
 **Test cases**
 
@@ -531,6 +603,10 @@ A file upload interface with both a traditional `<input type="file">` (target fo
 ✓ clear-all-button removes all files, no-files-message reappears
 ✓ setInputFiles with an image file → file-preview-0 is an <img> element
 ✓ total-size reflects the sum of all selected file sizes
+✓ setInputFiles fires a real POST /api/upload visible in DevTools Network
+✓ Uploading a single file → upload-status shows "Upload complete"
+✓ Uploading a 15 MB file → upload-status surfaces the 413 (File too large)
+✓ Network offline → upload-status shows "Network error" and file-list stays empty
 ```
 
 ---

@@ -17,21 +17,33 @@ export default function AuthRoom() {
     error: '',
   })
 
-  function handleLogin(e: React.FormEvent) {
+  async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     if (!state.username || !state.password) {
       setState((s) => ({ ...s, error: 'Both fields are required.' }))
       return
     }
-    const token = 'dummy-token-xyz-' + Date.now()
-    localStorage.setItem('auth-token', token)
-    document.cookie = 'auth-session=active; path=/'
-    setState((s) => ({ ...s, loggedIn: true, token, error: '' }))
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: state.username, password: state.password }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setState((s) => ({ ...s, error: data.error ?? 'Login failed' }))
+        return
+      }
+      localStorage.setItem('auth-token', data.token)
+      setState((s) => ({ ...s, loggedIn: true, token: data.token, error: '' }))
+    } catch {
+      setState((s) => ({ ...s, error: 'Network error — is the API server running?' }))
+    }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    await fetch('/api/logout', { method: 'POST' }).catch(() => {})
     localStorage.removeItem('auth-token')
-    document.cookie = 'auth-session=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'
     setState({ loggedIn: false, token: null, username: '', password: '', error: '' })
   }
 
@@ -103,8 +115,8 @@ export default function AuthRoom() {
             </div>
             <div className="bg-gray-50 rounded-lg p-3">
               <p className="text-xs text-gray-500 mb-1">Cookie</p>
-              <p data-testid="auth-cookie-display" className="font-mono text-gray-800">
-                auth-session=active
+              <p data-testid="auth-cookie-display" className="font-mono text-gray-800 break-all">
+                {document.cookie.split('; ').find((c) => c.startsWith('auth-session=')) ?? 'auth-session=(not set)'}
               </p>
             </div>
           </div>

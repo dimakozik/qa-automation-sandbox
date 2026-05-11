@@ -2,28 +2,14 @@ import { useState } from 'react'
 import type { ApiRequest, ApiResponse } from '../../types'
 
 const ENDPOINTS = [
-  '/api/users',
-  '/api/users/42',
-  '/api/products',
-  '/api/orders/7',
-  '/api/auth/token',
+  '/api/mock/users',
+  '/api/mock/users/42',
+  '/api/mock/products',
+  '/api/mock/orders/7',
+  '/api/mock/auth/token',
 ]
 
 const STATUS_CODES = [200, 201, 204, 400, 401, 403, 404, 422, 429, 500, 503]
-
-const MOCK_BODIES: Record<number, unknown> = {
-  200: { success: true, data: { id: 42, name: 'Jane Doe', email: 'jane@example.com', role: 'admin' } },
-  201: { success: true, created: true, id: 99, timestamp: new Date().toISOString() },
-  204: null,
-  400: { success: false, error: 'Bad Request', message: 'Invalid payload structure' },
-  401: { success: false, error: 'Unauthorized', message: 'Token missing or expired' },
-  403: { success: false, error: 'Forbidden', message: 'Insufficient permissions' },
-  404: { success: false, error: 'Not Found', message: 'Resource does not exist' },
-  422: { success: false, error: 'Unprocessable Entity', errors: [{ field: 'email', message: 'Invalid format' }] },
-  429: { success: false, error: 'Too Many Requests', retryAfter: 60 },
-  500: { success: false, error: 'Internal Server Error', message: 'Something went wrong on the server' },
-  503: { success: false, error: 'Service Unavailable', message: 'Server is temporarily down' },
-}
 
 function statusColor(code: number) {
   if (code < 300) return 'text-green-400'
@@ -32,27 +18,40 @@ function statusColor(code: number) {
   return 'text-red-400'
 }
 
-async function simulateFetch(req: ApiRequest): Promise<ApiResponse> {
-  await new Promise((r) => setTimeout(r, req.delay))
-  const body = MOCK_BODIES[req.statusCode] ?? { error: 'Unknown status' }
-  return {
-    status: req.statusCode,
-    ok: req.statusCode >= 200 && req.statusCode < 300,
-    headers: {
-      'content-type': 'application/json',
-      'x-request-id': crypto.randomUUID(),
-      'x-response-time': `${req.delay}ms`,
-    },
-    body,
-    duration: req.delay,
-    timestamp: new Date().toISOString(),
+async function realFetch(req: ApiRequest): Promise<ApiResponse> {
+  const url = `${req.endpoint}?mockStatus=${req.statusCode}&mockDelay=${req.delay}`
+  const hasBody = req.method !== 'GET' && req.method !== 'DELETE'
+  const start = performance.now()
+  let status = 0
+  let ok = false
+  let body: unknown = null
+  const headers: Record<string, string> = {}
+
+  try {
+    const res = await fetch(url, {
+      method: req.method,
+      headers: hasBody ? { 'Content-Type': 'application/json' } : undefined,
+      body: hasBody ? req.body : undefined,
+    })
+    status = res.status
+    ok = res.ok
+    res.headers.forEach((v, k) => { headers[k] = v })
+    if (status !== 204) {
+      const text = await res.text()
+      try { body = text ? JSON.parse(text) : null } catch { body = text }
+    }
+  } catch (e) {
+    body = { error: 'Network error', message: e instanceof Error ? e.message : String(e) }
   }
+
+  const duration = Math.round(performance.now() - start)
+  return { status, ok, headers, body, duration, timestamp: new Date().toISOString() }
 }
 
 export default function MockApiRoom() {
   const [req, setReq] = useState<ApiRequest>({
     method: 'GET',
-    endpoint: '/api/users',
+    endpoint: '/api/mock/users',
     statusCode: 200,
     delay: 300,
     body: '{\n  "name": "Jane Doe",\n  "email": "jane@example.com"\n}',
@@ -64,7 +63,7 @@ export default function MockApiRoom() {
   async function handleSend() {
     setLoading(true)
     setResponse(null)
-    const res = await simulateFetch(req)
+    const res = await realFetch(req)
     setResponse(res)
     setHistory((h) => [res, ...h].slice(0, 5))
     setLoading(false)

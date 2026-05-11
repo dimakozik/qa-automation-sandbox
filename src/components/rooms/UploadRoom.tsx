@@ -26,20 +26,52 @@ function fileIcon(type: string): string {
   return '📄'
 }
 
+type UploadStatus = 'idle' | 'uploading' | 'success' | 'error'
+
 export default function UploadRoom() {
   const [files, setFiles]       = useState<UploadedFile[]>([])
   const [dragging, setDragging] = useState(false)
+  const [status, setStatus]     = useState<UploadStatus>('idle')
+  const [errorMsg, setErrorMsg] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
-  function processFiles(fileList: FileList | null) {
-    if (!fileList) return
-    const newFiles: UploadedFile[] = []
-    Array.from(fileList).forEach((file) => {
-      const id = `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-      const preview = file.type.startsWith('image/') ? URL.createObjectURL(file) : null
-      newFiles.push({ id, name: file.name, size: file.size, type: file.type || 'application/octet-stream', preview })
-    })
-    setFiles((f) => [...f, ...newFiles])
+  async function processFiles(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return
+    const local = Array.from(fileList).map((file) => ({
+      file,
+      preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : null,
+    }))
+
+    setStatus('uploading')
+    setErrorMsg('')
+
+    const fd = new FormData()
+    local.forEach(({ file }) => fd.append('files', file))
+
+    try {
+      const res = await fetch('/api/upload', { method: 'POST', body: fd })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        local.forEach(({ preview }) => { if (preview) URL.revokeObjectURL(preview) })
+        setStatus('error')
+        setErrorMsg(data.error ?? `Upload failed (${res.status})`)
+        return
+      }
+      const serverFiles: Array<{ id: string; name: string; size: number; type: string }> = data.files ?? []
+      const merged: UploadedFile[] = serverFiles.map((sf, i) => ({
+        id: sf.id,
+        name: sf.name,
+        size: sf.size,
+        type: sf.type,
+        preview: local[i]?.preview ?? null,
+      }))
+      setFiles((f) => [...f, ...merged])
+      setStatus('success')
+    } catch (e) {
+      local.forEach(({ preview }) => { if (preview) URL.revokeObjectURL(preview) })
+      setStatus('error')
+      setErrorMsg(e instanceof Error ? e.message : 'Network error')
+    }
   }
 
   function removeFile(id: string) {
@@ -102,13 +134,29 @@ export default function UploadRoom() {
         <p className="text-sm font-medium text-gray-700">
           {dragging ? 'Drop files here' : 'Click or drag files here to upload'}
         </p>
-        <p className="text-xs text-gray-400 mt-1">Any file type — no actual upload (no backend)</p>
+        <p className="text-xs text-gray-400 mt-1">
+          Any file type · uploads POST to <code>/api/upload</code> (10MB limit per file)
+        </p>
         {dragging && (
           <div
             data-testid="drop-zone-active"
             className="absolute inset-0 rounded-xl bg-indigo-100 opacity-30 pointer-events-none"
           />
         )}
+      </div>
+
+      {/* Upload status */}
+      <div data-testid="upload-status" className="text-xs">
+        {status === 'uploading' && (
+          <span className="text-indigo-600 font-medium">⏳ Uploading…</span>
+        )}
+        {status === 'success' && (
+          <span className="text-green-600 font-medium">✓ Upload complete</span>
+        )}
+        {status === 'error' && (
+          <span data-testid="upload-error" className="text-red-600 font-medium">✗ {errorMsg}</span>
+        )}
+        {status === 'idle' && <span className="text-gray-400">Idle</span>}
       </div>
 
       {/* File list */}

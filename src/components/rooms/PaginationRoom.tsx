@@ -8,32 +8,32 @@ interface Record {
   score: number
 }
 
-const DEPARTMENTS = ['Engineering', 'Design', 'Marketing', 'Sales', 'QA', 'DevOps', 'Legal', 'Finance']
-const FIRST_NAMES = ['Alice', 'Bob', 'Carol', 'David', 'Eve', 'Frank', 'Grace', 'Henry', 'Iris', 'Jack',
-  'Karen', 'Leo', 'Maya', 'Nate', 'Olivia', 'Peter', 'Quinn', 'Rosa', 'Sam', 'Tina']
-const LAST_NAMES  = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Wilson', 'Moore']
-
-function makeRecord(id: number): Record {
-  const fn = FIRST_NAMES[id % FIRST_NAMES.length]
-  const ln = LAST_NAMES[id % LAST_NAMES.length]
-  return {
-    id,
-    name: `${fn} ${ln}`,
-    email: `${fn.toLowerCase()}.${ln.toLowerCase()}@corp.dev`,
-    department: DEPARTMENTS[id % DEPARTMENTS.length],
-    score: 40 + (id * 37 + 13) % 60,
-  }
-}
-
-const ALL_RECORDS: Record[] = Array.from({ length: 50 }, (_, i) => makeRecord(i + 1))
 const PAGE_SIZE = 8
 const INFINITE_BATCH = 10
 
 // ─── Paginated view ───────────────────────────────────────────────────────────
 function PaginatedView() {
   const [page, setPage] = useState(1)
-  const totalPages = Math.ceil(ALL_RECORDS.length / PAGE_SIZE)
-  const slice = ALL_RECORDS.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const [items, setItems] = useState<Record[]>([])
+  const [total, setTotal] = useState(0)
+  const [totalPages, setTotalPages] = useState(1)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    fetch(`/api/records?page=${page}&limit=${PAGE_SIZE}`)
+      .then((r) => r.json())
+      .then((data: { items: Record[]; totalPages: number; total: number }) => {
+        if (cancelled) return
+        setItems(data.items)
+        setTotalPages(data.totalPages)
+        setTotal(data.total)
+      })
+      .catch(() => { /* keep last good state */ })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [page])
 
   const pages = Array.from({ length: totalPages }, (_, i) => i + 1)
 
@@ -51,7 +51,14 @@ function PaginatedView() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {slice.map((r) => (
+            {loading && items.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-400" data-testid="paginated-loading">
+                  Loading records…
+                </td>
+              </tr>
+            )}
+            {items.map((r) => (
               <tr key={r.id} data-testid={`paginated-row-${r.id}`} className="hover:bg-gray-50">
                 <td className="px-4 py-3 font-mono text-xs text-gray-400">{r.id}</td>
                 <td className="px-4 py-3 font-medium text-gray-900">{r.name}</td>
@@ -79,7 +86,7 @@ function PaginatedView() {
       <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
         <p className="text-xs text-gray-500" data-testid="pagination-info">
           Page <span data-testid="current-page">{page}</span> of{' '}
-          <span data-testid="total-pages">{totalPages}</span> — {ALL_RECORDS.length} records
+          <span data-testid="total-pages">{totalPages}</span> — {total} records
         </p>
         <div className="flex items-center gap-1">
           <button
@@ -120,18 +127,33 @@ function PaginatedView() {
 
 // ─── Infinite scroll view ─────────────────────────────────────────────────────
 function InfiniteScrollView() {
-  const [visible, setVisible] = useState(INFINITE_BATCH)
+  const [items, setItems] = useState<Record[]>([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const sentinelRef = useRef<HTMLDivElement>(null)
+  const inflight = useRef(false)
 
-  const loadMore = useCallback(() => {
-    if (loading || visible >= ALL_RECORDS.length) return
+  const loadMore = useCallback(async () => {
+    if (inflight.current) return
+    if (total > 0 && items.length >= total) return
+    inflight.current = true
     setLoading(true)
-    setTimeout(() => {
-      setVisible((v) => Math.min(v + INFINITE_BATCH, ALL_RECORDS.length))
+    try {
+      const res = await fetch(`/api/records?offset=${items.length}&limit=${INFINITE_BATCH}`)
+      const data: { items: Record[]; total: number } = await res.json()
+      setItems((cur) => [...cur, ...data.items])
+      setTotal(data.total)
+    } catch {
+      /* leave state as is */
+    } finally {
+      inflight.current = false
       setLoading(false)
-    }, 800)
-  }, [loading, visible])
+    }
+  }, [items.length, total])
+
+  useEffect(() => {
+    if (items.length === 0) loadMore()
+  }, [items.length, loadMore])
 
   useEffect(() => {
     const sentinel = sentinelRef.current
@@ -144,8 +166,9 @@ function InfiniteScrollView() {
     return () => obs.disconnect()
   }, [loadMore])
 
-  const slice = ALL_RECORDS.slice(0, visible)
-  const hasMore = visible < ALL_RECORDS.length
+  const hasMore = total === 0 || items.length < total
+  const slice = items
+  const visible = items.length
 
   return (
     <div data-testid="infinite-scroll-view">
@@ -187,15 +210,15 @@ function InfiniteScrollView() {
           </div>
         )}
 
-        {!hasMore && (
+        {!hasMore && total > 0 && (
           <p data-testid="infinite-end" className="text-center text-xs text-gray-400 py-4">
-            All {ALL_RECORDS.length} records loaded.
+            All {total} records loaded.
           </p>
         )}
       </div>
 
       <div className="px-4 py-3 border-t border-gray-100 text-xs text-gray-500">
-        Showing <span data-testid="infinite-visible-count">{visible}</span> of {ALL_RECORDS.length}
+        Showing <span data-testid="infinite-visible-count">{visible}</span> of {total}
       </div>
     </div>
   )

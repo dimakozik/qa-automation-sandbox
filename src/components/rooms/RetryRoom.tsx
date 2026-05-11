@@ -1,22 +1,45 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+
+function getSessionId(): string {
+  const key = 'retry-session-id'
+  let sid = sessionStorage.getItem(key)
+  if (!sid) {
+    sid = crypto.randomUUID()
+    sessionStorage.setItem(key, sid)
+  }
+  return sid
+}
 
 // ---------- Deterministic: fails first N-1 attempts ----------
 function DeterministicRetry() {
   const MAX_FAILURES = 2
+  const sessionId = useRef(getSessionId())
   const [attempts, setAttempts] = useState(0)
   const [status, setStatus] = useState<'idle' | 'error' | 'success'>('idle')
   const [loading, setLoading] = useState(false)
 
   async function handleClick() {
     setLoading(true)
-    await new Promise((r) => setTimeout(r, 600))
-    setLoading(false)
-    const next = attempts + 1
-    setAttempts(next)
-    setStatus(next > MAX_FAILURES ? 'success' : 'error')
+    try {
+      const res = await fetch('/api/flaky/deterministic', {
+        method: 'POST',
+        headers: { 'x-session-id': sessionId.current },
+      })
+      const data = await res.json().catch(() => ({}))
+      setAttempts(data.attempts ?? attempts + 1)
+      setStatus(res.ok ? 'success' : 'error')
+    } catch {
+      setStatus('error')
+    } finally {
+      setLoading(false)
+    }
   }
 
-  function reset() {
+  async function reset() {
+    await fetch('/api/flaky/deterministic/reset', {
+      method: 'POST',
+      headers: { 'x-session-id': sessionId.current },
+    }).catch(() => {})
     setAttempts(0)
     setStatus('idle')
   }
@@ -98,9 +121,15 @@ function ProbabilisticRetry() {
 
   async function handleClick() {
     setLoading(true)
-    await new Promise((r) => setTimeout(r, 400 + Math.random() * 400))
-    setLoading(false)
-    const outcome: 'success' | 'error' = Math.random() < FAIL_RATE ? 'error' : 'success'
+    let outcome: 'success' | 'error' = 'error'
+    try {
+      const res = await fetch('/api/flaky/probabilistic', { method: 'POST' })
+      outcome = res.ok ? 'success' : 'error'
+    } catch {
+      outcome = 'error'
+    } finally {
+      setLoading(false)
+    }
     setResults((r) => [outcome, ...r].slice(0, 20))
   }
 
