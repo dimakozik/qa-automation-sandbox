@@ -220,31 +220,16 @@ function AriaLiveRegion() {
 }
 
 // ─── Tab Order Visualizer ─────────────────────────────────────────────────────
+const TAB_FIELDS: Array<{ id: string; label: string; full: boolean }> = [
+  { id: 'tab-first-name', label: 'First Name (tab 1)', full: false },
+  { id: 'tab-last-name',  label: 'Last Name (tab 2)',  full: false },
+  { id: 'tab-email',      label: 'Email (tab 3)',      full: false },
+  { id: 'tab-phone',      label: 'Phone (tab 4)',      full: false },
+  { id: 'tab-address',    label: 'Address (tab 5)',    full: true  },
+]
+
 function TabOrderVisualizer() {
   const [focused, setFocused] = useState<string | null>(null)
-
-  const Field = useCallback(({ id, label }: { id: string; label: string }) => (
-    <div className="relative">
-      {focused === id && (
-        <span className="absolute -top-2 -left-1 bg-indigo-600 text-white text-xs px-1.5 py-0.5 rounded font-bold z-10">
-          focused
-        </span>
-      )}
-      <input
-        data-testid={`tab-input-${id}`}
-        id={id}
-        type="text"
-        placeholder={label}
-        onFocus={() => setFocused(id)}
-        onBlur={() => setFocused(null)}
-        className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none transition-colors ${
-          focused === id
-            ? 'border-indigo-500 ring-2 ring-indigo-300 bg-indigo-50'
-            : 'border-gray-300'
-        }`}
-      />
-    </div>
-  ), [focused])
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
@@ -256,13 +241,28 @@ function TabOrderVisualizer() {
         and <code>toBeFocused()</code>.
       </p>
       <div data-testid="tab-order-form" className="grid grid-cols-2 gap-3">
-        <Field id="tab-first-name" label="First Name (tab 1)" />
-        <Field id="tab-last-name"  label="Last Name (tab 2)" />
-        <Field id="tab-email"      label="Email (tab 3)" />
-        <Field id="tab-phone"      label="Phone (tab 4)" />
-        <div className="col-span-2">
-          <Field id="tab-address"  label="Address (tab 5)" />
-        </div>
+        {TAB_FIELDS.map(({ id, label, full }) => (
+          <div key={id} className={`relative ${full ? 'col-span-2' : ''}`}>
+            {focused === id && (
+              <span className="absolute -top-2 -left-1 bg-indigo-600 text-white text-xs px-1.5 py-0.5 rounded font-bold z-10">
+                focused
+              </span>
+            )}
+            <input
+              data-testid={`tab-input-${id}`}
+              id={id}
+              type="text"
+              placeholder={label}
+              onFocus={() => setFocused(id)}
+              onBlur={() => setFocused(null)}
+              className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none transition-colors ${
+                focused === id
+                  ? 'border-indigo-500 ring-2 ring-indigo-300 bg-indigo-50'
+                  : 'border-gray-300'
+              }`}
+            />
+          </div>
+        ))}
       </div>
       <p className="mt-3 text-xs text-gray-400">
         Currently focused:{' '}
