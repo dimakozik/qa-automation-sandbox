@@ -4,6 +4,7 @@ import type { TableRow } from '../../types'
 export default function TableRoom() {
   const [rows, setRows] = useState<TableRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -14,6 +15,20 @@ export default function TableRoom() {
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [])
+
+  async function refreshTable() {
+    setRefreshing(true)
+    try {
+      const resetRes = await fetch('/api/_reset/rows', { method: 'POST' }).catch(() => null)
+      if (!resetRes || !resetRes.ok) return
+      const rowsRes = await fetch('/api/rows').catch(() => null)
+      if (!rowsRes || !rowsRes.ok) return
+      const data: TableRow[] = await rowsRes.json()
+      setRows(data)
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   async function deleteRow(id: number) {
     const prev = rows
@@ -38,7 +53,17 @@ export default function TableRoom() {
 
   return (
     <div data-testid="table-room" className="p-8">
-      <h1 className="text-2xl font-bold text-gray-900 mb-1">Table &amp; Data</h1>
+      <div className="flex items-start justify-between mb-1">
+        <h1 className="text-2xl font-bold text-gray-900">Table &amp; Data</h1>
+        <button
+          data-testid="refresh-table-btn"
+          onClick={refreshTable}
+          disabled={refreshing || loading}
+          className="text-xs px-3 py-1.5 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {refreshing ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
       <p className="text-sm text-gray-500 mb-8">
         Delete rows and toggle status. Each row and action has a unique <code>data-testid</code>.
       </p>
